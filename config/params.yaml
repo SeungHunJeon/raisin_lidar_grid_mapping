@@ -1,0 +1,44 @@
+map_resolution:
+  value: 0.025
+  dtype: double
+
+octree_leaf_size:
+  value: 0.05
+  dtype: double
+
+local_map_size:
+  value: 6
+  dtype: double
+
+max_count:
+  value: 5
+  dtype: double
+
+velocity_trust_threshold:
+  value: 6.
+  dtype: double
+
+distance_threshold:
+  value: 0.2
+  dtype: double
+
+height_threshold_minimum:
+  value: 0.05
+  dtype: double
+
+height_threshold_proportional:  # increase per meter
+  value: 0.05
+  dtype: double
+
+ray_casting:
+  is_ray_casting:
+    value: false
+    dtype: bool
+
+  downsampling_kernel:
+    value: 20
+    dtype: int
+
+grid_mapping_downsampling_kernel:
+  value: 2
+  dtype: int
