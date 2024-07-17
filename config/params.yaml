@@ -3,7 +3,7 @@ map_resolution:
   dtype: double
 
 octree_leaf_size:
-  value: 0.05
+  value: 0.0125
   dtype: double
 
 local_map_size:

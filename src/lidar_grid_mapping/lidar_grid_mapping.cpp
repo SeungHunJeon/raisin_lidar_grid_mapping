@@ -34,6 +34,17 @@ LidarGridMapping::LidarGridMapping(
   rcDownsamplingKernel_ = param_["ray_casting"]("downsampling_kernel");
   mappingIterIdx_ = 0;
   mappingDownsamplingKernel_ = param_("grid_mapping_downsampling_kernel");
+
+  logIdx_ = dataLogger_.initializeAnotherDataGroup(
+      "LidarGridMapping",
+      "cameraMapUpdateElapsedTime", cameraMapUpdateElapsedTime_,
+      "lidarMapUpdateElapsedTime", lidarMapUpdateElapsedTime_,
+      "advanceElapsedTime", advanceElapsedTime_ 
+  );
+
+  // for (int i = 0; i < 10000; i++) {
+  //   server.addVisualBox("sphere" + std::to_string(i), 0.025, 0.025, 0.025, 1, 0, 0, 1);
+  // }
 }
 
 LidarGridMapping::~LidarGridMapping()
@@ -124,7 +135,7 @@ void LidarGridMapping::initSensor()
 
 
   for (const auto & d435Module: d435Modules) {
-    auto& sensorSet = robotHub_->getSensorSet(d435Module);
+    auto sensorSet = robotHub_->getSensorSet(d435Module);
     if (align) {
       depthCameras_[d435Module] =
           sensorSet->getSensor<raisim::DepthCamera>("depth_aligned");
@@ -139,7 +150,7 @@ void LidarGridMapping::initSensor()
   }
 
   for (const auto & d430Module: d430Modules) {
-    auto& sensorSet = robotHub_->getSensorSet(d430Module);
+    auto sensorSet = robotHub_->getSensorSet(d430Module);
     depthCameras_[d430Module] = sensorSet->getSensor<raisim::DepthCamera>("depth");
     camWidth_[d430Module] = depthCameras_[d430Module]->getProperties().width;
     camHeight_[d430Module] = depthCameras_[d430Module]->getProperties().height;
@@ -161,7 +172,7 @@ void LidarGridMapping::initSensor()
   }
 
   for (const auto & lidarModule: lidarModules) {
-    auto& sensorSet = robotHub_->getSensorSet(lidarModule);
+    auto sensorSet = robotHub_->getSensorSet(lidarModule);
     lidars_[lidarModule] = sensorSet->getSensor<raisim::SpinningLidar>("lidar");
     poseBuffers_.emplace(lidarModule, PoseBuffer(100));
     updateTimeStamps_[lidarModule] = -1.0;
@@ -205,6 +216,8 @@ void LidarGridMapping::convertToHeightVec(const std::string & layerName)
 
 bool LidarGridMapping::advance()
 {
+  std::chrono::time_point<std::chrono::high_resolution_clock> advanceStart_ =
+    std::chrono::high_resolution_clock::now();
   // add pose to the buffer
   double timeStamp = worldHub_.getWorldTime();
   raisim::Vec<3> position;
@@ -336,6 +349,20 @@ bool LidarGridMapping::advance()
   mappingIterIdx_ = (mappingIterIdx_ + 1) %
     (mappingDownsamplingKernel_ * mappingDownsamplingKernel_);
 
+   std::chrono::time_point<std::chrono::high_resolution_clock> advanceEnd_ =
+   std::chrono::high_resolution_clock::now();
+
+  advanceElapsedTime_ = std::chrono::duration_cast<std::chrono::microseconds>(
+   advanceEnd_ - advanceStart_).count() / 1.e6;
+
+  // RSINFO(elapsedTime)
+
+  dataLogger_.append(
+    logIdx_,
+    cameraMapUpdateElapsedTime_,
+    lidarMapUpdateElapsedTime_,
+    advanceElapsedTime_);
+
   return true;
 }
 
@@ -388,6 +415,9 @@ void LidarGridMapping::readOctree(const std::string & lidarName)
 }
 
 void LidarGridMapping::lidarMapUpdate(const std::string & lidarName) {
+  std::chrono::time_point<std::chrono::high_resolution_clock> advanceStart_ =
+    std::chrono::high_resolution_clock::now();
+
   std::lock_guard<std::mutex> guardPerLidar(*mutexPerLidar_[lidarName]);
 
   raisim::SpinningLidar * lidar = lidars_[lidarName];
@@ -401,6 +431,7 @@ void LidarGridMapping::lidarMapUpdate(const std::string & lidarName) {
   pointClouds_[lidarName].swap(tempPointCloud);;
   
   // Process the point cloud
+  
   for (auto & point : pointClouds_[lidarName]) {
     point.e() = lidarOri * point.e() + lidarPos;
   }
@@ -410,6 +441,8 @@ void LidarGridMapping::lidarMapUpdate(const std::string & lidarName) {
   robotHub_->unlockMutex();
 
   // this->convertToOctree(lidarName);
+
+  pointClouds_[lidarName] = voxelGridFilter(pointClouds_[lidarName], param_("octree_leaf_size"));
 
   // update map
   grid_map::Position position(basePosition_[0], basePosition_[1]);
@@ -421,7 +454,8 @@ void LidarGridMapping::lidarMapUpdate(const std::string & lidarName) {
   tempHeightMap["max"].setConstant(0);
   tempHeightMap["count"].setConstant(0);
 
-  double h_thres = 1.4;
+  double h_thres = 0.7;
+  int idx = 0;
   // Eigen::Vector3d transformed_point;
   for (auto & transformed_point : pointClouds_[lidarName]) {
     grid_map::Index index;
@@ -430,6 +464,10 @@ void LidarGridMapping::lidarMapUpdate(const std::string & lidarName) {
       continue;
     }    
     if(transformed_point[2] < basePosition_[2] + h_thres) {
+    // if(idx < 10000) {
+    //   serverHub_.getVisualObject("sphere" + std::to_string(idx))->setPosition(point.e());
+    //   idx ++;
+    // } 
       tempHeightMap["sum"](index(0), index(1)) += transformed_point(2);
       if (tempHeightMap["count"](index(0), index(1)) < 0.5) {
         tempHeightMap["max"](index(0), index(1)) = static_cast<float>(transformed_point(2));
@@ -468,9 +506,56 @@ void LidarGridMapping::lidarMapUpdate(const std::string & lidarName) {
   
   // RSINFO("Map updating done! Conver to HeightVec")
   this->convertToHeightVec();
+
+  std::chrono::time_point<std::chrono::high_resolution_clock> advanceEnd_ =
+   std::chrono::high_resolution_clock::now();
+
+  lidarMapUpdateElapsedTime_ = std::chrono::duration_cast<std::chrono::microseconds>(
+   advanceEnd_ - advanceStart_).count() / 1.e6;
+}
+
+// Define the voxel grid filter function
+std::vector<raisim::Vec<3>> LidarGridMapping::voxelGridFilter(const std::vector<raisim::Vec<3>>& pointCloud, double voxelSize) {
+  // Map to store points by voxel index
+  tbb::concurrent_hash_map<Eigen::Vector3i, std::vector<Eigen::Vector3d>, Vector3iHash> voxelMap;
+
+  // Insert points into voxel grid in parallel
+  tbb::parallel_for(size_t(0), pointCloud.size(), [&](size_t i) {
+    const auto& point = pointCloud[i];
+    Eigen::Vector3d p(point[0], point[1], point[2]);
+    Eigen::Vector3i voxelIdx = (p / voxelSize).cast<int>();
+
+    tbb::concurrent_hash_map<Eigen::Vector3i, std::vector<Eigen::Vector3d>, Vector3iHash>::accessor accessor;
+    voxelMap.insert(accessor, voxelIdx);
+    accessor->second.push_back(p);
+  });
+
+  // Create filtered point cloud
+  std::vector<raisim::Vec<3>> filteredPointCloud;
+  filteredPointCloud.reserve(voxelMap.size());
+
+  for (const auto& voxel : voxelMap) {
+    const auto& points = voxel.second;
+    Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
+    for (const auto& p : points) {
+      centroid += p;
+    }
+    centroid /= points.size();
+
+    raisim::Vec<3> filteredPoint;
+    filteredPoint[0] = centroid.x();
+    filteredPoint[1] = centroid.y();
+    filteredPoint[2] = centroid.z();
+    filteredPointCloud.push_back(filteredPoint);
+  }
+
+  return filteredPointCloud;
 }
 
 void LidarGridMapping::mapUpdate(const std::string & linkName) {
+  std::chrono::time_point<std::chrono::high_resolution_clock> advanceStart_ =
+    std::chrono::high_resolution_clock::now();
+
   std::lock_guard<std::mutex> guardPerCamera(*mutexPerCamera_[linkName]);
 
   raisim::DepthCamera * depthCamera = depthCameras_[linkName];
@@ -577,6 +662,12 @@ void LidarGridMapping::mapUpdate(const std::string & linkName) {
   localMap_["max"] = localMap_["max"].cwiseMax(tempHeightMap["max"]);
 
   this->convertToHeightVec();
+
+  std::chrono::time_point<std::chrono::high_resolution_clock> advanceEnd_ =
+   std::chrono::high_resolution_clock::now();
+
+  cameraMapUpdateElapsedTime_ = std::chrono::duration_cast<std::chrono::microseconds>(
+   advanceEnd_ - advanceStart_).count() / 1.e6;
 }
 
 inline bool LidarGridMapping::downsamplingSelection(
